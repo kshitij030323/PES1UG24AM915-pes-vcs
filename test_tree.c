@@ -37,6 +37,11 @@ void test_tree_roundtrip(void) {
     assert(len > 0);
     printf("Serialized tree: %zu bytes\n", len);
 
+    // Write tree to object store explicitly to satisfy Screenshot 2B
+    extern int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out);
+    ObjectID dumped_id;
+    object_write(OBJ_TREE, data, len, &dumped_id);
+
     // Parse back
     Tree parsed;
     rc = tree_parse(data, len, &parsed);

@@ -15,6 +15,17 @@
 #include <string.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include "index.h"
+
+// Weak stub to satisfy the linker during `make test_tree` where the instructor
+// omitted `index.o`. In the final `pes` build, the strong `index_load` in
+// `index.c` will override this stub.
+__attribute__((weak)) int index_load(Index *index) {
+    (void)index;
+    return -1;
+}
+
+int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out);
 
 // ─── Mode Constants ─────────────────────────────────────────────────────────
 
@@ -129,9 +140,66 @@ int tree_serialize(const Tree *tree, void **data_out, size_t *len_out) {
 //   - object_write    : save that binary buffer to the store as OBJ_TREE
 //
 // Returns 0 on success, -1 on error.
+static int write_tree_level(IndexEntry *entries, int count, int path_offset, ObjectID *out_id) {
+    Tree this_tree;
+    this_tree.count = 0;
+
+    int i = 0;
+    while (i < count) {
+        if (this_tree.count >= MAX_TREE_ENTRIES) return -1;
+
+        const char *current_path = entries[i].path + path_offset;
+        char *slash = strchr(current_path, '/');
+
+        if (slash == NULL) {
+            // File entry
+            TreeEntry *te = &this_tree.entries[this_tree.count++];
+            te->mode = entries[i].mode;
+            te->hash = entries[i].hash;
+            strcpy(te->name, current_path);
+            i++;
+        } else {
+            // Directory entry
+            int dir_len = slash - current_path;
+            
+            // Group all entries with the same directory prefix
+            int j = i;
+            while (j < count) {
+                const char *next_path = entries[j].path + path_offset;
+                if (strncmp(next_path, current_path, dir_len) == 0 && next_path[dir_len] == '/') {
+                    j++;
+                } else {
+                    break;
+                }
+            }
+
+            ObjectID subdir_id;
+            if (write_tree_level(&entries[i], j - i, path_offset + dir_len + 1, &subdir_id) < 0) {
+                return -1;
+            }
+
+            TreeEntry *te = &this_tree.entries[this_tree.count++];
+            te->mode = MODE_DIR;
+            te->hash = subdir_id;
+            strncpy(te->name, current_path, dir_len);
+            te->name[dir_len] = '\0';
+
+            i = j;
+        }
+    }
+
+    void *tree_data = NULL;
+    size_t tree_len = 0;
+    if (tree_serialize(&this_tree, &tree_data, &tree_len) < 0) return -1;
+
+    int ret = object_write(OBJ_TREE, tree_data, tree_len, out_id);
+    free(tree_data);
+
+    return ret;
+}
+
 int tree_from_index(ObjectID *id_out) {
-    // TODO: Implement recursive tree building
-    // (See Lab Appendix for logical steps)
-    (void)id_out;
-    return -1;
+    Index idx;
+    if (index_load(&idx) < 0) return -1;
+    return write_tree_level(idx.entries, idx.count, 0, id_out);
 }
